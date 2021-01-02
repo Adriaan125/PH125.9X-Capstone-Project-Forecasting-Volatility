@@ -1,0 +1,565 @@
+---
+title: "Forecasting Volatility"
+author: "Hendrik Adriaan Nieuwenhuizen"
+date: 
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## 1. Introduction
+The dataset that I will be using for this project is the US Dollar versus the South African Rand exchange rate from January 2000 to November 2020, I exported the data from a reputable source and saved in my Github account.
+
+The goal of the project is to try and see if I can forecast the next 7 day volatility of the USDZAR exchange rate with the 30 day rolling volatility of this exchange rate as the predictor.
+
+"Volatility is a statistical measure of the dispersion of returns for a given security or market index. In most cases, the higher the volatility, the riskier the security. Volatility is often measured as either the standard deviation or variance between returns from that same security or market index." (Investopedia)
+
+I work in the financial services industry and forecasted volatility can be used in options pricing using the Black and Scholes pricing formula to hedge currency risk. 
+
+The outcome and the predicor will be continuous and in percentage format. We use SSE and RMSE as loss functions where applicable.
+
+I will start off by looking at linear regression as our baseline, then we will try to see which machine learning model has the best forecasting ability. For this project we will use K-nearest neighbours, regression trees and neural networks. For the machine learning we will split the data into a training and test set. We will use RMSE and SSE as loss functions to measure the efficacy for the continuous outcomes.
+
+
+```{r, include=FALSE}
+##########################################################
+# Create train set and test set
+##########################################################
+
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(readxl)) install.packages("readxl", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(rpart)) install.packages("rpart", repos = "http://cran.us.r-project.org")
+if(!require(neuralnet)) install.packages("neuralnet", repos = "http://cran.us.r-project.org")
+if(!require(GGally)) install.packages("GGally", repos = "http://cran.us.r-project.org")
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+if(!require(rmarkdown)) install.packages("rmarkdown", repos = "http://cran.us.r-project.org")
+if(!require(latexpdf)) install.packages("latexpdf", repos = "http://cran.us.r-project.org")
+if(!require(latex2exp)) install.packages("latex2exp", repos = "http://cran.us.r-project.org")
+if(!require(tinytex)) install.packages("tinytex", repos = "http://cran.us.r-project.org")
+if(!require(readr)) install.packages("readr", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(readxl)
+library(lubridate)
+library(rpart)
+library(neuralnet)
+library(GGally)
+library(knitr)
+library(rmarkdown)
+library(latexpdf)
+library(latex2exp)
+library(tinytex)
+library(readr)
+
+#data import from GITHUB
+url <- "https://raw.githubusercontent.com/Adriaan125/PH125.9X-Capstone-Project-Forecasting-Volatility/main/USDZAR_Curncy_2.csv"
+
+currency <- read_csv2(url)
+
+#fullpath <- file.path("/users/Adriaan/desktop/r/edx/9. capstone/project 2/USDZAR Curncy.xlsx")
+#currency <- read_xlsx(fullpath)
+
+#add column names
+names(currency) <- make.names(c("Date", "USDZAR Curncy", "LOG RETURNS", "ROLLING 30 DAY VOL", "ROLLING 7 DAY VOL", "DAILY VOL", "NEXT 7 DAY VOL"), unique=TRUE)
+
+#remove rows with N/A
+currency <- na.omit(currency)
+
+#create train and test set    #70/30
+set.seed(1, sample.kind = "Rounding") # if using R 3.6 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = currency$NEXT.7.DAY.VOL, times = 1, p = 0.3, list = FALSE)
+train_set <- currency[-test_index,]
+test_set <- currency[test_index,]
+```
+
+
+## 2. Method
+
+###### 2.1 Dataset 
+
+Currency dataset is the US Dollar versus the South African Rand exchange rate from January 2000 to November 2020. Dataset has 5 columns with 5426 rows.
+
+Train set has 3796 lines and test set has 1630 lines and both have the same headings as the currency dataset from which they are derived. 
+
+For the train and test datasets I chose a 70/30 split. From what I could gather online most data scientists recommend the 70/30 split to be sufficient.
+
+```{r}
+head(currency)   #tibble of currency dataset
+
+dim(currency)    #total lines in currency dataset
+
+dim(train_set)   #total lines in train dataset
+
+dim(test_set)    #total lines in test dataset
+
+```
+
+Below we show the 30 day rolling volatility (calculated on the last 24 business days historical data) and the 7 day forecasted volatility (based on historical data but forward looking for the next 5 business days) over time. We can clearly see the volatility spiked during the 2008 global financial crisis as know as the "GFC".
+
+```{r}
+currency %>% ggplot(aes(Date, ROLLING.30.DAY.VOL)) + 
+  ggtitle("Rolling 30 day VOL") +
+  geom_line()
+
+currency %>% ggplot(aes(Date, NEXT.7.DAY.VOL)) + 
+  ggtitle("Next 7 day VOL") +
+  geom_line()
+```
+
+
+###### 2.2 Linear regression
+
+For the first model I try to explain the outcome with 1 predictor using a linear regression model. Linear regression is seen as too rigid but it will serve as our baseline. We also compare this against simply guessing the outcome to see if the linear regression is actually explaining the outcome.
+
+###### 2.3 KNN
+
+For the first machine learning model I use K-nearest neighbours to see if we can beat linear regression. KNN works with continuous outcomes and should be able to provide a better forecast than linear regression. I will also use cross validation to optimise the k which is the parameter that represents the number of neighbours to include.
+
+###### 2.4 Regression trees
+
+For the second machine learning model I use regression trees which are used when the dependent variable is continuous.  In continuous, a value obtained is a mean response of observation. We use cross validation to optimise the complexity parameter(cp).
+
+###### 2.5 Neural Net
+
+For the third machine learning model I use neural networks, I tried a number of different parameter settings with over 5 layers, 5 neurons and 5 repititions. I only show the most relevant results that made sense. Overfitting is also a frequent problem in machine learning, the overfitted model doesn't generalise well. Neural networks can prevent overfitting.
+
+\newpage
+## 3. Results
+
+#### 3.1 Linear regression and guessing
+
+We first start with guessing the outcome as a way to see if the linear regression makes sense. The guess has a RMSE of 8.83%.
+
+```{r}
+#guessing
+guess <- mean(train_set$NEXT.7.DAY.VOL)
+guess
+
+mean((guess - test_set$NEXT.7.DAY.VOL)^2)   #squared loss of the guess
+
+RMSE(test_set$NEXT.7.DAY.VOL, guess)     #RMSE 8.83%
+
+```
+
+The linear regression has a RMSE of 7.63% so the linear regression is more accurate in forecasting than simple guessing. 
+
+I use the root mean squared error(RMSE) as loss function for a continuous variable.
+
+```{r}
+#linear regression
+
+fit <- lm(NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL, data=train_set)
+fit$coef
+
+y_hat <- fit$coef[1] + fit$coef[2]*test_set$ROLLING.30.DAY.VOL
+mean((y_hat - test_set$NEXT.7.DAY.VOL)^2)                 #squared loss of linear regression is lower than the squared loss of the guess
+
+
+y_hat1 <- predict(fit, test_set)
+mean((y_hat1 - test_set$NEXT.7.DAY.VOL)^2)  #using predict to calculate outcome
+LinearReg_RMSE <- RMSE(test_set$NEXT.7.DAY.VOL, y_hat)      #RMSE 7.63%
+LinearReg_RMSE
+```
+
+The correlation between the outcome and predictor has a correlation of 0.49 indicating that there is a moderate positive correlation.
+
+```{r}
+cor(train_set$NEXT.7.DAY.VOL , train_set$ROLLING.30.DAY.VOL)    
+```
+
+From the graph below we can surmise that forecasting the next 7 day vol with the rolling 30 day vol might be a challenge. The data appears to be non-linear.
+
+```{r warning=FALSE}
+data <- data.frame(train_set)
+ggplot(data, aes(ROLLING.30.DAY.VOL, NEXT.7.DAY.VOL)) +
+  geom_point() +
+  geom_smooth(method='lm') +
+  ggtitle("Linear regression") +
+  xlab("ROLLING.30.DAY.VOL") +
+  ylab("NEXT.7.DAY.VOL")
+```
+
+\newpage
+#### 3.2 KNN
+
+For the K-nearest neighbours model we will train the model with the train and test set.
+
+The below graph shows the results of the cross validation function. The default parameter recommends K = 9 to get the lowest RMSE. 
+
+```{r}
+train_knn <- train(  NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL, method = "knn", data = train_set)  #by default it does cross validation 
+
+ggplot(train_knn, highlight = TRUE)        #see results of cross validation and use highlight to show parameter that was optimized
+
+```
+
+
+
+```{r echo=FALSE}
+train_knn <- train( NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL, method = "knn", 
+                   data = train_set,
+                   tuneGrid = data.frame(k = seq(9, 71, 2)))   #use tunegrid to try more options for k
+ggplot(train_knn, highlight = TRUE)                            #we run 30 versions of k to 25 bootstrap samples
+         
+
+
+```
+
+Now we add the tuneGrid function to try more options for k. The parameter that maximises K's accuracy is 47.
+
+```{r}
+train_knn$bestTune #this is the best parameter that maximizes accuracy
+```
+
+
+```{r}
+train_knn$finalModel        #best performing model,  all up to now was on training set, not test set.
+```
+
+Next we run the knn model that was optimised and predict the outcome and compare the results to the test set. The RMSE for this exercise is 17.49%. This result is very disappointing since this RMSE is higher than the RMSE for the linear regression of 7.63%.
+
+```{r}
+knn_fit <- knn3( NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL, data = train_set, k=47)  #number of neighbours to include
+
+y_hat_knn <- predict(knn_fit, test_set)
+
+KNN_RMSE <- RMSE(test_set$NEXT.7.DAY.VOL, y_hat_knn)    #RMSE 17.49%
+KNN_RMSE
+```
+
+\newpage
+#### 3.3 Regression tree
+
+In this section we look at regression trees. To start we run rpart and we get a plot showing that the first split happens at 15.81% with 8 partitions.
+
+```{r echo=FALSE}
+fit <- rpart(NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL, data=train_set)   
+
+# visualize the splits 
+plot(fit, margin = 0.1)  #first split at 15.81%, we end up with 8 partitions
+text(fit, cex = 0.3)   #visialize where splits were done
+
+```
+
+
+
+```{r echo=FALSE}
+train_set %>% 
+  mutate(y_hat = predict(fit)) %>% 
+  ggplot() +
+  geom_point(aes(ROLLING.30.DAY.VOL, NEXT.7.DAY.VOL)) +
+  geom_step(aes(ROLLING.30.DAY.VOL, y_hat), col="red") +    #final estimate of f hat of x
+  ggtitle("Visual of partitions")
+
+```
+
+The final estimate f_hat of x. Every time we split RSS decreases. With more partitions our model has more flexibility to adapt to the training data.
+
+
+
+```{r echo=FALSE}
+# change parameters                                                                          #cp is minimum the RSS must improve for another partition to be added, this avoids overtraining
+fit <- rpart(NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL, data=train_set, control = rpart.control(cp = 0, minsplit = 2))   #minsplit is minimum observations per partition
+train_set %>% 
+  mutate(y_hat = predict(fit)) %>% 
+  ggplot() +
+  geom_point(aes(ROLLING.30.DAY.VOL, NEXT.7.DAY.VOL)) +
+  geom_step(aes(ROLLING.30.DAY.VOL, y_hat), col="red") +
+  ggtitle("Including minsplit")
+```
+
+A way to decide if the current partition should partition further is to use minsplit in the rpart function. This parameter is based on the minimum number of observations required to continue to partition further. This could lead to over training.
+
+
+
+```{r echo=FALSE}
+# use cross validation to choose cp
+library(caret)
+train_rpart <- train( NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL, method = "rpart", tuneGrid = data.frame(cp = seq(0, 0.1, len = 25)), data=train_set)
+ggplot(train_rpart)    #cp = 0.004166
+
+```
+
+The complexity parameter (cp) that is most effective is 0.004166 as shown below. You can continue splitting until RSS drops to zero but with the cp parameter we set the minimum for the RSS to add another partition. We use cross validation to optimise the cp.
+
+
+\newpage
+The final tree with the optimised k minimizes the mean squared error. 
+
+```{r}
+# access the final model and plot it
+plot(train_rpart$finalModel, margin = 0.1)
+text(train_rpart$finalModel, cex = 0.3)
+```
+
+The regression tree has now been optimised compared to the initial tree. Using a regression tree approach doesn't provide specific outcomes but useful to use as a broad tool to forecast volatility between specified levels like if volatility > x then expect high volatility in the next few days. 
+
+```{r echo=FALSE}
+train_set %>% 
+  mutate(y_hat = predict(train_rpart)) %>% 
+  ggplot() +
+  geom_point(aes(ROLLING.30.DAY.VOL, NEXT.7.DAY.VOL)) +
+  geom_step(aes(ROLLING.30.DAY.VOL, y_hat), col="red") +
+  ggtitle("Plot of f hat of x")
+```
+
+This is the final graph with the optimsed k parameter of 0.004166.
+
+\newpage
+#### 3.4 Neural network
+
+Since the above results for the K-nearest neighbours and regression tree was so disappointing I decided to try something radical and investigate the option of using a neural network.
+
+```{r, echo=FALSE}
+currency <- select(currency, NEXT.7.DAY.VOL, ROLLING.30.DAY.VOL, ROLLING.7.DAY.VOL, DAILY.VOL)
+currency1 <- select(currency, NEXT.7.DAY.VOL, ROLLING.30.DAY.VOL)
+
+```
+
+```{r}
+#data visual
+ggpairs(currency1, title = "Scatterplot Matrix of the Features of the currency Data Set (1 predictor)")
+
+```
+
+\newpage
+```{r}
+ggpairs(currency, title = "Scatterplot Matrix of the Features of the currency Data Set (3 predictors)")
+```
+
+\newpage
+
+```{r, include=FALSE}
+
+
+# Split into test and train sets    70/30
+set.seed(12345)
+train_set <- sample_frac(tbl = currency, replace = FALSE, size = 0.70)
+test_set <- anti_join(currency, train_set)
+```
+
+
+```{r}
+#1st Regression neural network
+#To begin we construct a 1-hidden layer ANN with 1 neuron, the simplest of all neural networks.
+
+set.seed(12321)
+train_NN1 <- neuralnet( NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL, data = train_set)
+
+```
+
+```{r}
+plot(train_NN1, rep = 'best')   #all parameters of regression and results of neural network on train set
+```
+The plot for the 1st regression shows the weights learned by neural network and number of iterations before convergence and sum of squared errors (SSE) on the train set.
+
+SSE for the 1st regression on the training set.
+
+```{r echo=FALSE}
+#plot shows weights learned by neural network and number of iterations before convergence and SSE on train set
+NN1_Train_SSE <- sum((train_NN1$net.result - train_set[, 1])^2)/2
+paste("SSE: ", round(NN1_Train_SSE, 4))
+```
+
+SSE of the NN1 training model against the test set.
+
+```{r echo=FALSE}
+#we use SSE to compare on train and test data
+Test_NN1_Output <- compute(train_NN1, test_set[, 2])$net.result    #[ ,2] column has predictor
+NN1_Test_SSE <- sum((Test_NN1_Output - test_set[, 1])^2)/2         #[ ,1] column has outcome
+paste("SSE: ", round(NN1_Test_SSE, 4))                    #SSE is lower on test vs train set
+
+NN1_Test_RMSE <- RMSE(test_set$NEXT.7.DAY.VOL, Test_NN1_Output)
+```
+
+\newpage
+
+Now I run 4 more variations of the neural network, below is a summary of all models run. I also included 2 smoothing techniques namely logistic and tanh.
+
+NN1 - 1-hidden layer ANN with 1 neuron.
+
+NN2 - 3-Hidden Layers, Layer-1 16-neurons, Layer-2, 4-neurons, Layer-3, 4 neurons, logistic activation.
+
+NN3 - 2-Hidden Layers, Layer-1 4-neurons, Layer-2, 1-neuron, tanh activation.
+
+NN4 - 1-Hidden Layer, 1-neuron, tanh activation function.
+
+NN5 - 3-Hidden Layers, Layer-1 16-neurons, Layer-2, 4-neurons, Layer-3, 4 neurons, logistic activation. (3 predictors)
+
+```{r, include=FALSE}
+##Regression Hyperparameters
+
+# # 3-Hidden Layers, Layer-1 4-neurons, Layer-2, 4-neurons, Layer-3, 4 neurons, logistic activation
+# function
+set.seed(12321)
+train_NN2 <- neuralnet(NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL, 
+                       data = train_set, 
+                       hidden = c(16, 4, 4), 
+                       act.fct = "logistic")     #logistic smooths the results
+
+## Training Error
+NN2_Train_SSE <- sum((train_NN2$net.result - train_set[, 1])^2)/2
+
+## Test Error
+Test_NN2_Output <- compute(train_NN2, test_set[, 2])$net.result
+NN2_Test_SSE <- sum((Test_NN2_Output - test_set[, 1])^2)/2
+
+NN2_Test_RMSE <- RMSE(test_set$NEXT.7.DAY.VOL, Test_NN2_Output)
+
+# Rescale for tanh activation function
+
+
+
+# 2-Hidden Layers, Layer-1 4-neurons, Layer-2, 1-neuron, tanh activation
+# function
+set.seed(12321)
+train_NN3 <- neuralnet(NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL, 
+                       data = train_set, 
+                       hidden = c(4, 1), 
+                       act.fct = "tanh")
+
+## Training Error
+NN3_Train_SSE <- sum((train_NN3$net.result - train_set[, 1])^2)/2
+
+## Test Error
+Test_NN3_Output <- compute(train_NN3, test_set[, 2])$net.result
+NN3_Test_SSE <- sum((Test_NN3_Output - test_set[, 1])^2)/2
+
+NN3_Test_RMSE <- RMSE(test_set$NEXT.7.DAY.VOL, Test_NN3_Output)
+
+#1-Hidden Layer, 1-neuron, tanh activation function
+set.seed(12321)
+train_NN4 <- neuralnet(NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL, 
+                       data = train_set, 
+                       act.fct = "tanh",
+                       stepmax = 1e7)           #added stepmax because I reached the limit before the algorithm could converge to 1
+
+## Training Error
+NN4_Train_SSE <- sum((train_NN4$net.result - train_set[, 1])^2)/2
+
+## Test Error
+Test_NN4_Output <- compute(train_NN4, test_set[, 2])$net.result
+NN4_Test_SSE <- sum((Test_NN4_Output - test_set[, 1])^2)/2
+
+NN4_Test_RMSE <- RMSE(test_set$NEXT.7.DAY.VOL, Test_NN4_Output)
+
+# 3-Hidden Layers, Layer-1 16-neurons, Layer-2, 4-neurons, Layer-3, 4 neurons, logistic activation (3 predictors)
+# function
+set.seed(12321)
+train_NN5 <- neuralnet(NEXT.7.DAY.VOL ~ ROLLING.30.DAY.VOL + ROLLING.7.DAY.VOL + DAILY.VOL, 
+                       data = train_set, 
+                       hidden = c(16, 4, 4), 
+                       act.fct = "logistic",
+                       stepmax = 1e7)     #logistic smooths the results
+
+plot(train_NN5, rep = "best")
+
+## Training Error
+NN5_Train_SSE <- sum((train_NN5$net.result - train_set[, 1])^2)/2
+
+## Test Error
+Test_NN5_Output <- compute(train_NN5, test_set[, 2:4])$net.result        #predictors are column 2 to 4
+NN5_Test_SSE <- sum((Test_NN5_Output - test_set[, 1])^2)/2       
+
+NN5_Test_RMSE <- RMSE(test_set$NEXT.7.DAY.VOL, Test_NN5_Output)
+```
+
+
+
+```{r echo=FALSE}
+plot(train_NN2, rep = 'best')  #all parameters of regression and results of neural network on train set with NN2
+```
+
+Plot of the NN2 - 3-Hidden Layers, Layer-1 16-neurons, Layer-2, 4-neurons, Layer-3, 4 neurons, logistic activation.
+
+```{r echo=FALSE}
+plot(train_NN3, rep = 'best')  #all parameters of regression and results of neural network on train set with NN3
+```
+
+Plot of the NN3 - 2-Hidden Layers, Layer-1 4-neurons, Layer-2, 1-neuron, tanh activation.
+
+```{r echo=FALSE}
+plot(train_NN4, rep = 'best')  #all parameters of regression and results of neural network on train set with NN4
+```
+
+Plot of the NN4 - 1-Hidden Layer, 1-neuron, tanh activation function.
+
+```{r}
+plot(train_NN5, rep = 'best')  #all parameters of regression and results of neural network on train set with NN5
+```
+
+NN5 - 3-Hidden Layers, Layer-1 16-neurons, Layer-2, 4-neurons, Layer-3, 4 neurons, logistic activation (3 predictors).
+
+I decided to add one model with 3 predictors since the results from the first 4 neural networks still had very high RMSE's which shows they aren't very good at forecasting. Adding the additional predictors didn't make a big difference.
+
+\newpage
+The graph shows a summary of the SSE's for all 5 neural networks for the train and test set.
+
+```{r echo=FALSE}
+# Bar plot of results
+Regression_NN_Errors <- tibble(Network = rep(c("NN1", "NN2", "NN3", "NN4", "NN5"), each = 2), 
+                               DataSet = rep(c("Train", "Test"), time = 5), 
+                               SSE = c(NN1_Train_SSE, NN1_Test_SSE, 
+                                       NN2_Train_SSE, NN2_Test_SSE, 
+                                       NN3_Train_SSE, NN3_Test_SSE, 
+                                       NN4_Train_SSE, NN4_Test_SSE,
+                                       NN5_Train_SSE, NN5_Test_SSE))
+
+Regression_NN_Errors %>% 
+  ggplot(aes(Network, SSE, fill = DataSet)) + 
+  geom_col(position = "dodge") + 
+  ggtitle("SSE's of neural network regressions")      #SSE results of train and test set
+```
+
+RMSE of the 5 neural networks performed for the test set. Overall the NN2 had the lowest SSE and RMSE.
+
+```{r}
+NN1_Test_RMSE
+NN2_Test_RMSE
+NN3_Test_RMSE
+NN4_Test_RMSE
+NN5_Test_RMSE
+```
+
+NN2 - 3-Hidden Layers, Layer-1 16-neurons, Layer-2, 4-neurons, Layer-3, 4 neurons, logistic activation. were the most accurate from all the variations I attempted.
+
+
+\newpage
+## 4. Conclusion
+
+```{r echo=FALSE}
+summary <- tibble( Model = c("Linear Reg", "KNN", "Neural Network"),
+                   RMSE = c(LinearReg_RMSE*100, KNN_RMSE*100, NN5_Test_RMSE*100))
+
+
+ggplot(summary, aes(Model, RMSE)) + geom_col()
+
+```
+
+I looked at various methods of forecasting the 7 day volatility from linear regression to 3 machine learning techniques including K-nearest neighbours, regression trees and neural networks.
+
+I wasn't able to successfully construct a model that could reliably use the 30 day rolling volatility to predict the 7 day volatility, the RMSE's were just too high. The linear regression method was the most accurate at forecasting the next 7 day volatility from the models I tried. The regression tree could be useful to classify volatility into different regimes such as low or high volatility expecations. 
+
+One limitation in this project was the use of one predictor namely the 30 day rolling volatility. But in the neural network section I did introduce 2 additional predictors just to see if it can improve the model but it didn't.
+
+Forecasting volatility is very difficult however, one of my work colleagues did a similar exercise in Python using machine learning and his results were very similar to mine.
+
+Future work can include looking at other predictors to forecast the 7 day volatility such as different periods for the rolling volatility or a different predictor like the daily returns of the currency. Another possible model to explore is the GARCH model that supports changes in time dependent volatility.
+
+
+
+
+
+
